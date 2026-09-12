@@ -74,7 +74,7 @@ with tab1:
           "遅番対応": True,
       },
       {
-          "氏name": "久保",
+          "氏名": "久保",
           "区分": "社員",
           "公休数": 9,
           "担当顧客グループ": "グループA",
@@ -207,6 +207,10 @@ with tab3:
       }
       daily_shain_off = {d: 0 for d in days}
       daily_total_off = {d: 0 for d in days}
+
+      # スタッフ情報の高速・安全なルックアップ辞書作成
+      staff_info = edited_staff.set_index("氏名").to_dict(orient="index")
+
       late_shift_counts = {
           row["氏名"]: 0
           for _, row in edited_staff.iterrows()
@@ -243,15 +247,10 @@ with tab3:
             if d + 1 <= num_days:
               if shift_matrix[m][d + 1] != "":
                 continue
-              is_shain = (
-                  edited_staff[edited_staff["氏名"] == m]["区分"].values[0]
-                  == "社員"
-              )
+              is_shain = staff_info[m]["区分"] == "社員"
               if is_shain and daily_shain_off[d + 1] >= 2:
                 continue
-              grp = edited_staff[edited_staff["氏名"] == m][
-                  "担当顧客グループ"
-              ].values[0]
+              grp = staff_info[m]["担当顧客グループ"]
               grp_members = edited_staff[
                   edited_staff["担当顧客グループ"] == grp
               ]["氏名"].tolist()
@@ -274,12 +273,7 @@ with tab3:
             if d + 1 <= num_days:
               shift_matrix[selected][d + 1] = "休"
               daily_total_off[d + 1] += 1
-              if (
-                  edited_staff[edited_staff["氏名"] == selected]["区分"].values[
-                      0
-                  ]
-                  == "社員"
-              ):
+              if staff_info[selected]["区分"] == "社員":
                 daily_shain_off[d + 1] += 1
 
       # 2. 残りの公休「休」の補完計算 (最大5連勤制限・グループ重複防止)
