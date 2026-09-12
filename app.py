@@ -11,11 +11,11 @@ st.set_page_config(page_title="シフト自動作成システム", layout="wide"
 
 st.title("🗓️ 葬儀支社向け シフト自動作成システム")
 st.caption(
-    "全支社共通ルール（友引優先・社員最低2名出勤）および支社別ルール（顧客重複防止・遅番自動分散＆翌日休み・健診公休）対応"
+    "全支社共通ルール（社員最低2名出勤・最大5連勤制限）および支社別ルール（顧客重複防止・遅番自動分散＆翌日休み・健診公休）対応"
 )
 
 # ---------------------------------------------------------
-# 1. 六曜（友引）計算ロジック
+# 1. 六曜計算ロジック
 # ---------------------------------------------------------
 NEW_MOONS = [
     (datetime.date(2025, 12, 19), 2025, 11),
@@ -74,7 +74,7 @@ with tab1:
           "遅番対応": True,
       },
       {
-          "氏名": "久保",
+          "氏name": "久保",
           "区分": "社員",
           "公休数": 9,
           "担当顧客グループ": "グループA",
@@ -231,24 +231,47 @@ with tab3:
 
       random.seed(45)
 
-      # 1. 遅番の自動バランス割り当て (友引以外＆遅番翌日は自動で「休」)
+      # 1. 遅番の自動バランス割り当て (全日対象・均等配置＆遅番翌日は自動で「休」)
       late_eligible = edited_staff[edited_staff["遅番対応"]]["氏名"].tolist()
       for d in days:
-        dt = datetime.date(target_year, target_month, d)
-        if get_rokuyo_short(dt) != "友" and late_eligible:
-          # 候補の中から遅番回数が最小の人を選出
-          available_candidates = [
-              m for m in late_eligible if shift_matrix[m][d] == ""
-          ]
-          if available_candidates:
+        if late_eligible:
+          valid_late_candidates = []
+          for m in late_eligible:
+            if shift_matrix[m][d] != "":
+              continue
+            # 翌日(d+1)が「休」となる場合の制約チェック
+            if d + 1 <= num_days:
+              if shift_matrix[m][d + 1] != "":
+                continue
+              is_shain = (
+                  edited_staff[edited_staff["氏名"] == m]["区分"].values[0]
+                  == "社員"
+              )
+              if is_shain and daily_shain_off[d + 1] >= 2:
+                continue
+              grp = edited_staff[edited_staff["氏名"] == m][
+                  "担当顧客グループ"
+              ].values[0]
+              grp_members = edited_staff[
+                  edited_staff["担当顧客グループ"] == grp
+              ]["氏名"].tolist()
+              if grp != "共通" and any(
+                  shift_matrix[gm][d + 1] in ["休", "健"]
+                  for gm in grp_members
+                  if gm != m
+              ):
+                continue
+            valid_late_candidates.append(m)
+
+          if valid_late_candidates:
             selected = min(
-                available_candidates, key=lambda x: late_shift_counts[x]
+                valid_late_candidates, key=lambda x: late_shift_counts[x]
             )
             shift_matrix[selected][d] = "遅"
             late_shift_counts[selected] += 1
 
             # 【必須ルール】遅番翌日は「休」（公休）を自動セット
-            if d + 1 <= num_days and shift_matrix[selected][d + 1] == "":
+            if d + 1 <= num_days:
               shift_matrix[selected][d + 1] = "休"
               daily_total_off[d + 1] += 1
               if (
@@ -259,10 +282,11 @@ with tab3:
               ):
                 daily_shain_off[d + 1] += 1
 
-      # 2. 残りの公休「休」の補完計算
+      # 2. 残りの公休「休」の補完計算 (最大5連勤制限・グループ重複防止)
       sorted_staff = edited_staff.sort_values(
           by="区分", ascending=True
       )  # 社員優先処理
+
       for _, staff in sorted_staff.iterrows():
         name = staff["氏名"]
         target_off = staff["公休数"]
@@ -274,7 +298,7 @@ with tab3:
         ]
         needed_off = target_off - len(current_offs)
 
-        if needed_off > 0:
+        for _ in range(needed_off):
           candidates = []
           for d in days:
             if shift_matrix[name][d] != "":
@@ -297,21 +321,62 @@ with tab3:
 
             candidates.append(d)
 
+          if not candidates:
+            candidates = [
+                d
+                for d in days
+                if shift_matrix[name][d] == ""
+                and (not is_shain or daily_shain_off[d] < 2)
+            ]
+          if not candidates:
+            candidates = [d for d in days if shift_matrix[name][d] == ""]
+
           def score_day(d):
             score = 0
-            if d in tomobiki_days:
-              score += 8
+
+            # 連続勤務数の判定（6連勤以上＝5連勤超過を防ぐためのスコア優先計算）
+            left_work = 0
+            curr = d - 1
+            while curr >= 1 and shift_matrix[name][curr] not in [
+                "休",
+                "健",
+                "有",
+            ]:
+              left_work += 1
+              curr -= 1
+
+            right_work = 0
+            curr = d + 1
+            while curr <= num_days and shift_matrix[name][curr] not in [
+                "休",
+                "健",
+                "有",
+            ]:
+              right_work += 1
+              curr += 1
+
+            total_consec = left_work + 1 + right_work
+
+            # 5連勤を超える（6連勤以上）箇所に最優先で公休を配置
+            if total_consec >= 6:
+              score += 500 * (total_consec - 5)
+            elif total_consec == 5:
+              score += 50
+            elif total_consec == 4:
+              score += 15
+
+            # 全体出勤人数の平準化（休みが少ない日を優先）
             score += (10 - daily_total_off[d]) * 2
-            return score + random.uniform(0, 1)
+            score += random.uniform(0, 1)
+            return score
 
           candidates.sort(key=score_day, reverse=True)
-          chosen_offs = candidates[:needed_off]
+          best_d = candidates[0]
 
-          for d in chosen_offs:
-            shift_matrix[name][d] = "休"
-            daily_total_off[d] += 1
-            if is_shain:
-              daily_shain_off[d] += 1
+          shift_matrix[name][best_d] = "休"
+          daily_total_off[best_d] += 1
+          if is_shain:
+            daily_shain_off[best_d] += 1
 
       # 3. Excelワークシートへ結果を書き込み
       for r in range(10, 18):
