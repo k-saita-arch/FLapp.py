@@ -11,7 +11,7 @@ st.set_page_config(page_title="シフト自動作成システム", layout="wide"
 
 st.title("🗓️ 葬儀支社向け シフト自動作成システム")
 st.caption(
-    "全支社共通ルール（社員最低2名出勤・最大5連勤制限）および支社別ルール（顧客重複防止・遅番自動分散＆翌日休み・健診公休）対応"
+    "全支社共通ルール（社員最低2名出勤・最大5連勤制限）および支社別ルール（顧客重複防止・遅番自動分散＆翌日休み・健診公休・希望出勤対応）"
 )
 
 # ---------------------------------------------------------
@@ -55,7 +55,7 @@ def get_rokuyo_short(dt: datetime.date) -> str:
 # 2. タブ画面の構築
 # ---------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(
-    ["⚙️ 1. スタッフ・支社ルール設定", "📅 2. 対象年月選択", "🚀 3. シフト自動作成・出力"]
+    ["⚙️ 1. スタッフ・支社ルール設定", "📅 2. 対象年月・事前予定入力", "🚀 3. シフト自動作成・出力"]
 )
 
 # --- タブ1：マスタ管理 ---
@@ -121,9 +121,9 @@ with tab1:
       default_staff, num_rows="dynamic", use_container_width=True
   )
 
-# --- タブ2：対象年月選択 ---
+# --- タブ2：対象年月選択 ＆ 事前予定入力 ---
 with tab2:
-  st.subheader("シフト作成対象月")
+  st.subheader("シフト作成対象月 ＆ 事前予定入力")
   col_y, col_m = st.columns(2)
   with col_y:
     target_year = st.number_input("作成年", value=2026, step=1)
@@ -133,14 +133,35 @@ with tab2:
     )
 
   _, num_days = calendar.monthrange(target_year, target_month)
+  days = list(range(1, num_days + 1))
   st.info(f"対象期間: {target_year}年{target_month}月1日 ～ {num_days}日")
 
   tomobiki_list = []
-  for d in range(1, num_days + 1):
+  for d in days:
     dt = datetime.date(target_year, target_month, d)
     if get_rokuyo_short(dt) == "友":
       tomobiki_list.append(f"{d}日({WEEKDAYS_JP[dt.weekday()]})")
   st.write(f"**当月の友引日:** {', '.join(tomobiki_list)}")
+
+  st.markdown("---")
+  st.subheader("📝 事前予定（希望休・希望出勤・有給・健康診断など）の入力")
+  st.caption(
+      "※指定がある日のみ入力してください。"
+      "【入力記号ルール】 `休` = 希望休 | `出` = 希望出勤日 | `有` = 有給休暇 | `健` = 健康診断  "
+      "※ `出`（希望出勤日）に指定した日は、公休や遅番などの自動割り当てから除外され、必ず出勤となります。"
+  )
+
+  # 初期データの作成（スタッフ名 × 1日〜31日の空表）
+  pre_input_data = {"氏名": edited_staff["氏名"].tolist()}
+  for d in days:
+    pre_input_data[f"{d}日"] = ""
+
+  initial_pre_df = pd.DataFrame(pre_input_data)
+
+  # 画面上で希望を入力できるテーブル
+  edited_pre_df = st.data_editor(
+      initial_pre_df, use_container_width=True, hide_index=True
+  )
 
 # --- タブ3：自動作成＆ダウンロード ---
 with tab3:
@@ -200,7 +221,6 @@ with tab3:
         )
 
       # 計算用データ構造の作成
-      days = list(range(1, num_days + 1))
       shift_matrix = {
           row["氏名"]: {d: "" for d in days}
           for _, row in edited_staff.iterrows()
@@ -208,7 +228,6 @@ with tab3:
       daily_shain_off = {d: 0 for d in days}
       daily_total_off = {d: 0 for d in days}
 
-      # スタッフ情報の高速・安全なルックアップ辞書作成
       staff_info = edited_staff.set_index("氏名").to_dict(orient="index")
 
       late_shift_counts = {
@@ -217,25 +236,22 @@ with tab3:
           if row["遅番対応"]
       }
 
-      # 事前に入力されている手動予定（有給・健診・希望休）の読み込み
-      for _, staff in edited_staff.iterrows():
-        name = staff["氏名"]
-        for r in range(10, 18):
-          if ws.cell(row=r, column=3).value == name:
-            for day in range(1, num_days + 1):
-              val = ws.cell(row=r, column=3 + day).value
-              if val:
-                val_str = str(val).strip()
-                if val_str in ["休", "有", "健"]:
-                  shift_matrix[name][day] = val_str
-                  if val_str in ["休", "健"]:  # 健診も公休扱い
-                    daily_total_off[day] += 1
-                    if staff["区分"] == "社員":
-                      daily_shain_off[day] += 1
+      # WEB画面（タブ2）で入力された事前予定（希望休・希望出勤・有給・健診）の読込
+      for _, row in edited_pre_df.iterrows():
+        name = row["氏名"]
+        if name in shift_matrix:
+          for d in days:
+            val = str(row[f"{d}日"]).strip() if pd.notna(row[f"{d}日"]) else ""
+            if val in ["休", "有", "健", "出"]:
+              shift_matrix[name][d] = val
+              if val in ["休", "健"]:  # 健診も公休扱い
+                daily_total_off[d] += 1
+                if staff_info[name]["区分"] == "社員":
+                  daily_shain_off[d] += 1
 
       random.seed(45)
 
-      # 1. 遅番の自動バランス割り当て (全日対象・均等配置＆遅番翌日は自動で「休」)
+      # 1. 遅番の自動バランス割り当て (希望出勤「出」や「休」の日は回避)
       late_eligible = edited_staff[edited_staff["遅番対応"]]["氏名"].tolist()
       for d in days:
         if late_eligible:
@@ -243,7 +259,6 @@ with tab3:
           for m in late_eligible:
             if shift_matrix[m][d] != "":
               continue
-            # 翌日(d+1)が「休」となる場合の制約チェック
             if d + 1 <= num_days:
               if shift_matrix[m][d + 1] != "":
                 continue
@@ -269,7 +284,6 @@ with tab3:
             shift_matrix[selected][d] = "遅"
             late_shift_counts[selected] += 1
 
-            # 【必須ルール】遅番翌日は「休」（公休）を自動セット
             if d + 1 <= num_days:
               shift_matrix[selected][d + 1] = "休"
               daily_total_off[d + 1] += 1
@@ -277,9 +291,7 @@ with tab3:
                 daily_shain_off[d + 1] += 1
 
       # 2. 残りの公休「休」の補完計算 (最大5連勤制限・グループ重複防止)
-      sorted_staff = edited_staff.sort_values(
-          by="区分", ascending=True
-      )  # 社員優先処理
+      sorted_staff = edited_staff.sort_values(by="区分", ascending=True)
 
       for _, staff in sorted_staff.iterrows():
         name = staff["氏名"]
@@ -298,11 +310,9 @@ with tab3:
             if shift_matrix[name][d] != "":
               continue
 
-            # 社員休み上限（1日2名まで＝最低2名出勤）
             if is_shain and daily_shain_off[d] >= 2:
               continue
 
-            # 同一顧客グループの休み被り防止
             grp_members = edited_staff[
                 edited_staff["担当顧客グループ"] == grp
             ]["氏名"].tolist()
@@ -327,8 +337,6 @@ with tab3:
 
           def score_day(d):
             score = 0
-
-            # 連続勤務数の判定（6連勤以上＝5連勤超過を防ぐためのスコア優先計算）
             left_work = 0
             curr = d - 1
             while curr >= 1 and shift_matrix[name][curr] not in [
@@ -351,7 +359,6 @@ with tab3:
 
             total_consec = left_work + 1 + right_work
 
-            # 5連勤を超える（6連勤以上）箇所に最優先で公休を配置
             if total_consec >= 6:
               score += 500 * (total_consec - 5)
             elif total_consec == 5:
@@ -359,7 +366,6 @@ with tab3:
             elif total_consec == 4:
               score += 15
 
-            # 全体出勤人数の平準化（休みが少ない日を優先）
             score += (10 - daily_total_off[d]) * 2
             score += random.uniform(0, 1)
             return score
@@ -372,27 +378,33 @@ with tab3:
           if is_shain:
             daily_shain_off[best_d] += 1
 
-      # 3. Excelワークシートへ結果を書き込み
+      # 3. Excelワークシートへ書き込み (出勤「出」は原本フォーマットに従い空欄に変換)
       for r in range(10, 18):
         emp_name = ws.cell(row=r, column=3).value
         if emp_name in shift_matrix:
           for day in range(1, num_days + 1):
             val = shift_matrix[emp_name][day]
-            ws.cell(row=r, column=3 + day).value = val if val != "" else None
+            ws.cell(row=r, column=3 + day).value = (
+                val if val in ["休", "有", "健", "遅"] else None
+            )
 
-      # 結果表示用のDataFrame
-      res_df = pd.DataFrame(shift_matrix).T
+      # 画面プレビュー用のDataFrame (希望出勤「出」は画面上でも空欄として表示)
+      preview_matrix = {}
+      for name, schedule in shift_matrix.items():
+        preview_matrix[name] = {
+            d: (val if val in ["休", "有", "健", "遅"] else "")
+            for d, val in schedule.items()
+        }
+      res_df = pd.DataFrame(preview_matrix).T
       res_df.columns = [f"{d}日" for d in days]
 
       st.success("🎉 シフトのたたき台が完成しました！")
       st.dataframe(res_df, use_container_width=True)
 
-      # メモリ上でExcelファイルをバイナリデータ化
       excel_buffer = io.BytesIO()
       wb.save(excel_buffer)
       excel_buffer.seek(0)
 
-      # Excelダウンロードボタン
       st.download_button(
           label="📥 完成したシフト表（Excel）をダウンロード",
           data=excel_buffer,
