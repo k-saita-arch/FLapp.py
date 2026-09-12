@@ -1,0 +1,343 @@
+import calendar
+import datetime
+import io
+import random
+import openpyxl
+import pandas as pd
+import streamlit as st
+
+# ページ基本設定
+st.set_page_config(page_title="シフト自動作成システム", layout="wide")
+
+st.title("🗓️ 葬儀支社向け シフト自動作成システム")
+st.caption(
+    "全支社共通ルール（友引優先・社員最低2名出勤）および支社別ルール（顧客重複防止・遅番自動分散＆翌日休み・健診公休）対応"
+)
+
+# ---------------------------------------------------------
+# 1. 六曜（友引）計算ロジック
+# ---------------------------------------------------------
+NEW_MOONS = [
+    (datetime.date(2025, 12, 19), 2025, 11),
+    (datetime.date(2026, 1, 19), 2025, 12),
+    (datetime.date(2026, 2, 17), 2026, 1),
+    (datetime.date(2026, 3, 19), 2026, 2),
+    (datetime.date(2026, 4, 17), 2026, 3),
+    (datetime.date(2026, 5, 17), 2026, 4),
+    (datetime.date(2026, 6, 15), 2026, 5),
+    (datetime.date(2026, 7, 14), 2026, 6),
+    (datetime.date(2026, 8, 13), 2026, 7),
+    (datetime.date(2026, 9, 11), 2026, 8),
+    (datetime.date(2026, 10, 10), 2026, 9),
+    (datetime.date(2026, 11, 9), 2026, 10),
+    (datetime.date(2026, 12, 9), 2026, 11),
+    (datetime.date(2027, 1, 7), 2026, 12),
+]
+ROKUYO_SHORT = ["大", "赤", "勝", "友", "負", "仏"]
+WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
+
+
+def get_rokuyo_short(dt: datetime.date) -> str:
+  last_nm = None
+  for nm_date, l_year, l_month in NEW_MOONS:
+    if dt >= nm_date:
+      last_nm = (nm_date, l_year, l_month)
+    else:
+      break
+  if not last_nm:
+    return ""
+  nm_date, l_year, l_month = last_nm
+  l_day = (dt - nm_date).days + 1
+  return ROKUYO_SHORT[(l_month + l_day) % 6]
+
+
+# ---------------------------------------------------------
+# 2. タブ画面の構築
+# ---------------------------------------------------------
+tab1, tab2, tab3 = st.tabs(
+    ["⚙️ 1. スタッフ・支社ルール設定", "📅 2. 対象年月選択", "🚀 3. シフト自動作成・出力"]
+)
+
+# --- タブ1：マスタ管理 ---
+with tab1:
+  st.subheader("支社スタッフ情報・制約ルールの登録")
+  st.write(
+      "担当顧客が同じスタッフ同士の休み重複防止や、遅番対応の可否を設定します。"
+  )
+
+  default_staff = pd.DataFrame([
+      {
+          "氏名": "齊田",
+          "区分": "社員",
+          "公休数": 9,
+          "担当顧客グループ": "グループA",
+          "遅番対応": True,
+      },
+      {
+          "氏名": "久保",
+          "区分": "社員",
+          "公休数": 9,
+          "担当顧客グループ": "グループA",
+          "遅番対応": True,
+      },
+      {
+          "氏名": "上田",
+          "区分": "社員",
+          "公休数": 10,
+          "担当顧客グループ": "グループB",
+          "遅番対応": True,
+      },
+      {
+          "氏名": "石山",
+          "区分": "社員",
+          "公休数": 10,
+          "担当顧客グループ": "グループB",
+          "遅番対応": False,
+      },
+      {
+          "氏名": "森川",
+          "区分": "パート",
+          "公休数": 19,
+          "担当顧客グループ": "共通",
+          "遅番対応": False,
+      },
+      {
+          "氏名": "宮地",
+          "区分": "パート",
+          "公休数": 9,
+          "担当顧客グループ": "共通",
+          "遅番対応": False,
+      },
+      {
+          "氏名": "鈴村",
+          "区分": "パート",
+          "公休数": 18,
+          "担当顧客グループ": "共通",
+          "遅番対応": False,
+      },
+  ])
+
+  edited_staff = st.data_editor(
+      default_staff, num_rows="dynamic", use_container_width=True
+  )
+
+# --- タブ2：対象年月選択 ---
+with tab2:
+  st.subheader("シフト作成対象月")
+  col_y, col_m = st.columns(2)
+  with col_y:
+    target_year = st.number_input("作成年", value=2026, step=1)
+  with col_m:
+    target_month = st.number_input(
+        "作成月", value=11, min_value=1, max_value=12, step=1
+    )
+
+  _, num_days = calendar.monthrange(target_year, target_month)
+  st.info(f"対象期間: {target_year}年{target_month}月1日 ～ {num_days}日")
+
+  tomobiki_list = []
+  for d in range(1, num_days + 1):
+    dt = datetime.date(target_year, target_month, d)
+    if get_rokuyo_short(dt) == "友":
+      tomobiki_list.append(f"{d}日({WEEKDAYS_JP[dt.weekday()]})")
+  st.write(f"**当月の友引日:** {', '.join(tomobiki_list)}")
+
+# --- タブ3：自動作成＆ダウンロード ---
+with tab3:
+  st.subheader("たたき台シフトの自動生成")
+  st.write("ボタンをクリックすると、設定ルールに基づいて自動計算を行います。")
+
+  if st.button("🚀 シフト自動作成を実行する", type="primary"):
+    with st.spinner("ルールを満たす最適な組み合わせを計算中..."):
+      try:
+        wb = openpyxl.load_workbook("シフト（自動化）.xlsx")
+        ws = wb["原本"]
+      except FileNotFoundError:
+        st.error(
+            "【エラー】'シフト（自動化）.xlsx' が見つかりません。GitHubリポジトリ内に配置されているか確認してください。"
+        )
+        st.stop()
+
+      # プルダウン（入力規制）クリア
+      ws.data_validations.dataValidation.clear()
+
+      # タイトル・日付・曜日・六曜のセット
+      ws.cell(
+          row=1, column=3
+      ).value = (
+          f"          {target_year}年{target_month}月≪休日10日≫ 休日シフト表"
+      )
+      start_date = datetime.date(target_year, target_month, 1)
+      ws.cell(row=7, column=3).value = start_date
+
+      tomobiki_days = []
+      for day in range(1, 32):
+        col_idx = 3 + day
+        if day <= num_days:
+          dt = datetime.date(target_year, target_month, day)
+          ws.cell(row=7, column=col_idx).value = dt
+          ws.cell(row=8, column=col_idx).value = WEEKDAYS_JP[dt.weekday()]
+
+          rokuyo = get_rokuyo_short(dt)
+          if rokuyo == "友":
+            ws.cell(row=9, column=col_idx).value = "友"
+            tomobiki_days.append(day)
+          else:
+            ws.cell(row=9, column=col_idx).value = None
+        else:
+          ws.cell(row=7, column=col_idx).value = None
+          ws.cell(row=8, column=col_idx).value = None
+          ws.cell(row=9, column=col_idx).value = None
+
+      # 集計数式の更新 (休 + 健 を公休としてカウント)
+      for day in range(1, num_days + 1):
+        col_idx = 3 + day
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        ws.cell(
+            row=5, column=col_idx
+        ).value = (
+            f'=COUNTIFS({col_letter}10:{col_letter}18,"休")+COUNTIFS({col_letter}10:{col_letter}18,"健")'
+        )
+
+      # 計算用データ構造の作成
+      days = list(range(1, num_days + 1))
+      shift_matrix = {
+          row["氏名"]: {d: "" for d in days}
+          for _, row in edited_staff.iterrows()
+      }
+      daily_shain_off = {d: 0 for d in days}
+      daily_total_off = {d: 0 for d in days}
+      late_shift_counts = {
+          row["氏名"]: 0
+          for _, row in edited_staff.iterrows()
+          if row["遅番対応"]
+      }
+
+      # 事前に入力されている手動予定（有給・健診・希望休）の読み込み
+      for _, staff in edited_staff.iterrows():
+        name = staff["氏名"]
+        for r in range(10, 18):
+          if ws.cell(row=r, column=3).value == name:
+            for day in range(1, num_days + 1):
+              val = ws.cell(row=r, column=3 + day).value
+              if val:
+                val_str = str(val).strip()
+                if val_str in ["休", "有", "健"]:
+                  shift_matrix[name][day] = val_str
+                  if val_str in ["休", "健"]:  # 健診も公休扱い
+                    daily_total_off[day] += 1
+                    if staff["区分"] == "社員":
+                      daily_shain_off[day] += 1
+
+      random.seed(45)
+
+      # 1. 遅番の自動バランス割り当て (友引以外＆遅番翌日は自動で「休」)
+      late_eligible = edited_staff[edited_staff["遅番対応"]]["氏名"].tolist()
+      for d in days:
+        dt = datetime.date(target_year, target_month, d)
+        if get_rokuyo_short(dt) != "友" and late_eligible:
+          # 候補の中から遅番回数が最小の人を選出
+          available_candidates = [
+              m for m in late_eligible if shift_matrix[m][d] == ""
+          ]
+          if available_candidates:
+            selected = min(
+                available_candidates, key=lambda x: late_shift_counts[x]
+            )
+            shift_matrix[selected][d] = "遅"
+            late_shift_counts[selected] += 1
+
+            # 【必須ルール】遅番翌日は「休」（公休）を自動セット
+            if d + 1 <= num_days and shift_matrix[selected][d + 1] == "":
+              shift_matrix[selected][d + 1] = "休"
+              daily_total_off[d + 1] += 1
+              if (
+                  edited_staff[edited_staff["氏名"] == selected]["区分"].values[
+                      0
+                  ]
+                  == "社員"
+              ):
+                daily_shain_off[d + 1] += 1
+
+      # 2. 残りの公休「休」の補完計算
+      sorted_staff = edited_staff.sort_values(
+          by="区分", ascending=True
+      )  # 社員優先処理
+      for _, staff in sorted_staff.iterrows():
+        name = staff["氏名"]
+        target_off = staff["公休数"]
+        is_shain = staff["区分"] == "社員"
+        grp = staff["担当顧客グループ"]
+
+        current_offs = [
+            d for d in days if shift_matrix[name][d] in ["休", "健"]
+        ]
+        needed_off = target_off - len(current_offs)
+
+        if needed_off > 0:
+          candidates = []
+          for d in days:
+            if shift_matrix[name][d] != "":
+              continue
+
+            # 社員休み上限（1日2名まで＝最低2名出勤）
+            if is_shain and daily_shain_off[d] >= 2:
+              continue
+
+            # 同一顧客グループの休み被り防止
+            grp_members = edited_staff[
+                edited_staff["担当顧客グループ"] == grp
+            ]["氏名"].tolist()
+            if grp != "共通" and any(
+                shift_matrix[m][d] in ["休", "健"]
+                for m in grp_members
+                if m != name
+            ):
+              continue
+
+            candidates.append(d)
+
+          def score_day(d):
+            score = 0
+            if d in tomobiki_days:
+              score += 8
+            score += (10 - daily_total_off[d]) * 2
+            return score + random.uniform(0, 1)
+
+          candidates.sort(key=score_day, reverse=True)
+          chosen_offs = candidates[:needed_off]
+
+          for d in chosen_offs:
+            shift_matrix[name][d] = "休"
+            daily_total_off[d] += 1
+            if is_shain:
+              daily_shain_off[d] += 1
+
+      # 3. Excelワークシートへ結果を書き込み
+      for r in range(10, 18):
+        emp_name = ws.cell(row=r, column=3).value
+        if emp_name in shift_matrix:
+          for day in range(1, num_days + 1):
+            val = shift_matrix[emp_name][day]
+            ws.cell(row=r, column=3 + day).value = val if val != "" else None
+
+      # 結果表示用のDataFrame
+      res_df = pd.DataFrame(shift_matrix).T
+      res_df.columns = [f"{d}日" for d in days]
+
+      st.success("🎉 シフトのたたき台が完成しました！")
+      st.dataframe(res_df, use_container_width=True)
+
+      # メモリ上でExcelファイルをバイナリデータ化
+      excel_buffer = io.BytesIO()
+      wb.save(excel_buffer)
+      excel_buffer.seek(0)
+
+      # Excelダウンロードボタン
+      st.download_button(
+          label="📥 完成したシフト表（Excel）をダウンロード",
+          data=excel_buffer,
+          file_name=f"シフト（自動化）_{target_year}年{target_month}月.xlsx",
+          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          type="primary",
+      )
