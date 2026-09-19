@@ -3,7 +3,7 @@ import datetime
 import io
 import random
 import openpyxl
-from openpyxl.styles import Border, Side
+from openpyxl.styles import Border, Side, PatternFill
 import pandas as pd
 import streamlit as st
 
@@ -194,6 +194,8 @@ with tab3:
 
       tomobiki_days = []
       thick_side = Side(style='medium') # 1週間の区切り用の太線
+      # 友引のセルに色を付けるための設定（黄色）
+      yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 
       for day in range(1, 32):
         col_idx = 3 + day
@@ -207,10 +209,14 @@ with tab3:
           next_dt = dt + datetime.timedelta(days=1)
           next_rokuyo = get_rokuyo_short(next_dt)
 
-          # 友引と友引前日の表記
+          # 友引と友引前日の表記 ＆ 友引の日のセル色変更
           if rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "友"
             tomobiki_days.append(day)
+            # 7行目(日付), 8行目(曜日), 9行目(六曜)の背景色を黄色に
+            ws.cell(row=7, column=col_idx).fill = yellow_fill
+            ws.cell(row=8, column=col_idx).fill = yellow_fill
+            ws.cell(row=9, column=col_idx).fill = yellow_fill
           elif next_rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "前"
           else:
