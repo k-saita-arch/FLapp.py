@@ -3,6 +3,7 @@ import datetime
 import io
 import random
 import openpyxl
+from openpyxl.styles import Border, Side
 import pandas as pd
 import streamlit as st
 
@@ -192,6 +193,8 @@ with tab3:
       ws.cell(row=7, column=3).value = start_date
 
       tomobiki_days = []
+      thick_side = Side(style='medium') # 1週間の区切り用の太線
+
       for day in range(1, 32):
         col_idx = 3 + day
         if day <= num_days:
@@ -199,12 +202,51 @@ with tab3:
           ws.cell(row=7, column=col_idx).value = dt
           ws.cell(row=8, column=col_idx).value = WEEKDAYS_JP[dt.weekday()]
 
+          # 当日の六曜と翌日の六曜を取得（友引前日の判定用）
           rokuyo = get_rokuyo_short(dt)
+          next_dt = dt + datetime.timedelta(days=1)
+          next_rokuyo = get_rokuyo_short(next_dt)
+
+          # 友引と友引前日の表記
           if rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "友"
             tomobiki_days.append(day)
+          elif next_rokuyo == "友":
+            ws.cell(row=9, column=col_idx).value = "前"
           else:
             ws.cell(row=9, column=col_idx).value = None
+
+          # 日曜から土曜を1週間とするための区切り罫線（日曜日の左と土曜日の右を太くする）
+          if dt.weekday() == 6:  # 6 = 日曜日
+            for r in range(5, 19):  # 5行目(集計行)から18行目まで適用
+              # 日曜セルの左罫線を太く
+              cell = ws.cell(row=r, column=col_idx)
+              cell.border = Border(
+                  left=thick_side,
+                  right=cell.border.right,
+                  top=cell.border.top,
+                  bottom=cell.border.bottom,
+                  diagonal=cell.border.diagonal,
+                  diagonal_direction=cell.border.diagonal_direction,
+                  outline=cell.border.outline,
+                  vertical=cell.border.vertical,
+                  horizontal=cell.border.horizontal
+              )
+              # 前日(土曜日)が存在する場合、土曜セルの右罫線も太くする
+              if day > 1:
+                prev_cell = ws.cell(row=r, column=col_idx - 1)
+                prev_cell.border = Border(
+                    left=prev_cell.border.left,
+                    right=thick_side,
+                    top=prev_cell.border.top,
+                    bottom=prev_cell.border.bottom,
+                    diagonal=prev_cell.border.diagonal,
+                    diagonal_direction=prev_cell.border.diagonal_direction,
+                    outline=prev_cell.border.outline,
+                    vertical=prev_cell.border.vertical,
+                    horizontal=prev_cell.border.horizontal
+                )
+
         else:
           ws.cell(row=7, column=col_idx).value = None
           ws.cell(row=8, column=col_idx).value = None
