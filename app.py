@@ -193,10 +193,13 @@ with tab3:
       ws.cell(row=7, column=3).value = start_date
 
       tomobiki_days = []
-      thick_side = Side(style='medium')  # 1週間の区切り用の太線
-      # 画像の薄緑色（#E2EFDA）の設定
-      green_fill = PatternFill(
+      thick_side = Side(style='thick')  # くっきりした極太線
+      # 友引の色（薄緑）と友引前日の色（さらに1段薄い緑）
+      tomobiki_fill = PatternFill(
           start_color='E2EFDA', end_color='E2EFDA', fill_type='solid'
+      )
+      zenjitsu_fill = PatternFill(
+          start_color='F2F9EC', end_color='F2F9EC', fill_type='solid'
       )
 
       for day in range(1, 32):
@@ -206,25 +209,27 @@ with tab3:
           ws.cell(row=7, column=col_idx).value = dt
           ws.cell(row=8, column=col_idx).value = WEEKDAYS_JP[dt.weekday()]
 
-          # 当日の六曜と翌日の六曜を取得（友引前日の判定用）
+          # 当日の六曜と翌日の六曜を取得
           rokuyo = get_rokuyo_short(dt)
           next_dt = dt + datetime.timedelta(days=1)
           next_rokuyo = get_rokuyo_short(next_dt)
 
-          # 友引と友引前日の表記 ＆ 友引の列全体（5〜24行目）を薄緑色に塗りつぶし
+          # 友引・友引前日の表記 ＆ 着色（5,6行目は除外し、7〜24行目に適用）
           if rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "友"
             tomobiki_days.append(day)
-            for r in range(5, 25):  # 5行目から24行目までの縦一列を緑色に着色
-              ws.cell(row=r, column=col_idx).fill = green_fill
+            for r in range(7, 25):  # 7〜24行目を友引の色（薄緑）で着色
+              ws.cell(row=r, column=col_idx).fill = tomobiki_fill
           elif next_rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "前"
+            for r in range(7, 25):  # 7〜24行目を前日の色（1段薄い緑）で着色
+              ws.cell(row=r, column=col_idx).fill = zenjitsu_fill
           else:
             ws.cell(row=9, column=col_idx).value = None
 
-          # 日曜から土曜を1週間とするための区切り罫線（日曜日の左と土曜日の右を太くする）
+          # 日曜から土曜を1週間とするための区切り罫線（5〜24行目まで太線を統一適用）
           if dt.weekday() == 6:  # 6 = 日曜日
-            for r in range(5, 19):  # 5行目(集計行)から18行目まで適用
+            for r in range(5, 25):  # 24行目まで太さを統一
               cell = ws.cell(row=r, column=col_idx)
               cell.border = Border(
                   left=thick_side,
