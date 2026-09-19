@@ -193,9 +193,11 @@ with tab3:
       ws.cell(row=7, column=3).value = start_date
 
       tomobiki_days = []
-      thick_side = Side(style='medium') # 1週間の区切り用の太線
-      # 友引のセルに色を付けるための設定（黄色）
-      yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+      thick_side = Side(style='medium')  # 1週間の区切り用の太線
+      # 画像の薄緑色（#E2EFDA）の設定
+      green_fill = PatternFill(
+          start_color='E2EFDA', end_color='E2EFDA', fill_type='solid'
+      )
 
       for day in range(1, 32):
         col_idx = 3 + day
@@ -209,14 +211,12 @@ with tab3:
           next_dt = dt + datetime.timedelta(days=1)
           next_rokuyo = get_rokuyo_short(next_dt)
 
-          # 友引と友引前日の表記 ＆ 友引の日のセル色変更
+          # 友引と友引前日の表記 ＆ 友引の列全体（5〜24行目）を薄緑色に塗りつぶし
           if rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "友"
             tomobiki_days.append(day)
-            # 7行目(日付), 8行目(曜日), 9行目(六曜)の背景色を黄色に
-            ws.cell(row=7, column=col_idx).fill = yellow_fill
-            ws.cell(row=8, column=col_idx).fill = yellow_fill
-            ws.cell(row=9, column=col_idx).fill = yellow_fill
+            for r in range(5, 25):  # 5行目から24行目までの縦一列を緑色に着色
+              ws.cell(row=r, column=col_idx).fill = green_fill
           elif next_rokuyo == "友":
             ws.cell(row=9, column=col_idx).value = "前"
           else:
@@ -225,7 +225,6 @@ with tab3:
           # 日曜から土曜を1週間とするための区切り罫線（日曜日の左と土曜日の右を太くする）
           if dt.weekday() == 6:  # 6 = 日曜日
             for r in range(5, 19):  # 5行目(集計行)から18行目まで適用
-              # 日曜セルの左罫線を太く
               cell = ws.cell(row=r, column=col_idx)
               cell.border = Border(
                   left=thick_side,
@@ -236,9 +235,8 @@ with tab3:
                   diagonal_direction=cell.border.diagonal_direction,
                   outline=cell.border.outline,
                   vertical=cell.border.vertical,
-                  horizontal=cell.border.horizontal
+                  horizontal=cell.border.horizontal,
               )
-              # 前日(土曜日)が存在する場合、土曜セルの右罫線も太くする
               if day > 1:
                 prev_cell = ws.cell(row=r, column=col_idx - 1)
                 prev_cell.border = Border(
@@ -250,7 +248,7 @@ with tab3:
                     diagonal_direction=prev_cell.border.diagonal_direction,
                     outline=prev_cell.border.outline,
                     vertical=prev_cell.border.vertical,
-                    horizontal=prev_cell.border.horizontal
+                    horizontal=prev_cell.border.horizontal,
                 )
 
         else:
